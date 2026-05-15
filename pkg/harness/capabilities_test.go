@@ -29,6 +29,7 @@ func TestAdvancedCapabilitiesDefaults(t *testing.T) {
 		expectMaxDuration   api.SupportLevel
 		expectAuthFile      api.SupportLevel
 		expectVertexAI      api.SupportLevel
+		expectBedrock       api.SupportLevel
 		expectSystemPrompt  api.SupportLevel
 		expectResume        api.SupportLevel
 	}{
@@ -40,6 +41,7 @@ func TestAdvancedCapabilitiesDefaults(t *testing.T) {
 			expectMaxDuration:   api.SupportYes,
 			expectAuthFile:      api.SupportYes,
 			expectVertexAI:      api.SupportYes,
+			expectBedrock:       api.SupportNo,
 			expectSystemPrompt:  api.SupportYes,
 			expectResume:        api.SupportYes,
 		},
@@ -51,6 +53,7 @@ func TestAdvancedCapabilitiesDefaults(t *testing.T) {
 			expectMaxDuration:   api.SupportYes,
 			expectAuthFile:      api.SupportYes,
 			expectVertexAI:      api.SupportYes,
+			expectBedrock:       api.SupportYes,
 			expectSystemPrompt:  api.SupportYes,
 			expectResume:        api.SupportYes,
 		},
@@ -62,6 +65,7 @@ func TestAdvancedCapabilitiesDefaults(t *testing.T) {
 			expectMaxDuration:   api.SupportYes,
 			expectAuthFile:      api.SupportYes,
 			expectVertexAI:      api.SupportNo,
+			expectBedrock:       api.SupportNo,
 			expectSystemPrompt:  api.SupportPartial,
 			expectResume:        api.SupportYes,
 		},
@@ -73,6 +77,7 @@ func TestAdvancedCapabilitiesDefaults(t *testing.T) {
 			expectMaxDuration:   api.SupportYes,
 			expectAuthFile:      api.SupportYes,
 			expectVertexAI:      api.SupportNo,
+			expectBedrock:       api.SupportNo,
 			expectSystemPrompt:  api.SupportNo,
 			expectResume:        api.SupportYes,
 		},
@@ -84,6 +89,7 @@ func TestAdvancedCapabilitiesDefaults(t *testing.T) {
 			expectMaxDuration:   api.SupportYes,
 			expectAuthFile:      api.SupportYes,
 			expectVertexAI:      api.SupportYes,
+			expectBedrock:       api.SupportNo,
 			expectSystemPrompt:  api.SupportPartial,
 			expectResume:        api.SupportNo,
 		},
@@ -106,6 +112,9 @@ func TestAdvancedCapabilitiesDefaults(t *testing.T) {
 			}
 			if caps.Auth.VertexAI.Support != tc.expectVertexAI {
 				t.Fatalf("vertex_ai = %q, want %q", caps.Auth.VertexAI.Support, tc.expectVertexAI)
+			}
+			if caps.Auth.Bedrock.Support != tc.expectBedrock {
+				t.Fatalf("bedrock = %q, want %q", caps.Auth.Bedrock.Support, tc.expectBedrock)
 			}
 			if caps.Prompts.SystemPrompt.Support != tc.expectSystemPrompt {
 				t.Fatalf("system_prompt = %q, want %q", caps.Prompts.SystemPrompt.Support, tc.expectSystemPrompt)

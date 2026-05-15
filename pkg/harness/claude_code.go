@@ -57,6 +57,7 @@ func (c *ClaudeCode) AdvancedCapabilities() api.HarnessAdvancedCapabilities {
 			AuthFile:   api.CapabilityField{Support: api.SupportYes},
 			OAuthToken: api.CapabilityField{Support: api.SupportYes},
 			VertexAI:   api.CapabilityField{Support: api.SupportYes},
+			Bedrock:    api.CapabilityField{Support: api.SupportYes},
 		},
 		Resume: api.CapabilityField{Support: api.SupportYes},
 	}
@@ -138,6 +139,12 @@ func (c *ClaudeCode) Provision(ctx context.Context, agentName, agentDir, agentHo
 			"CLAUDE_CODE_USE_VERTEX":      "1",
 			"ANTHROPIC_VERTEX_PROJECT_ID": "${GOOGLE_CLOUD_PROJECT}",
 			"CLOUD_ML_REGION":             "${GOOGLE_CLOUD_REGION}",
+		}
+	case "bedrock":
+		envUpdates = map[string]string{
+			"CLAUDE_CODE_USE_BEDROCK":  "1",
+			"AWS_BEARER_TOKEN_BEDROCK": "${AWS_BEARER_TOKEN_BEDROCK}",
+			"AWS_REGION":               "${AWS_REGION}",
 		}
 	}
 
@@ -376,8 +383,16 @@ func (c *ClaudeCode) ResolveAuth(auth api.AuthConfig) (*api.ResolvedAuth, error)
 				return nil, fmt.Errorf("claude: auth type %q selected but GOOGLE_CLOUD_PROJECT and/or GOOGLE_CLOUD_REGION not set", auth.SelectedType)
 			}
 			return c.resolveVertexAI(auth), nil
+		case "bedrock":
+			if auth.AWSBedrockBearerToken == "" {
+				return nil, fmt.Errorf("claude: auth type %q selected but AWS_BEARER_TOKEN_BEDROCK not set", auth.SelectedType)
+			}
+			if auth.AWSRegion == "" {
+				return nil, fmt.Errorf("claude: auth type %q selected but AWS_REGION not set", auth.SelectedType)
+			}
+			return c.resolveBedrock(auth), nil
 		default:
-			return nil, fmt.Errorf("claude: unknown auth type %q; valid types are: api-key, oauth-token, auth-file, vertex-ai", auth.SelectedType)
+			return nil, fmt.Errorf("claude: unknown auth type %q; valid types are: api-key, oauth-token, auth-file, vertex-ai, bedrock", auth.SelectedType)
 		}
 	}
 
@@ -417,14 +432,33 @@ func (c *ClaudeCode) ResolveAuth(auth api.AuthConfig) (*api.ResolvedAuth, error)
 		}, nil
 	}
 
-	// 4. Vertex AI — requires project + region, plus either ADC file or
+	// 4. AWS Bedrock — requires bearer token + region. Detected before
+	//    Vertex AI because AWS_BEARER_TOKEN_BEDROCK is unambiguous (an
+	//    LLM-specific env var) whereas Vertex relies on more generic GCP
+	//    credentials that may be present for unrelated reasons.
+	if auth.AWSBedrockBearerToken != "" && auth.AWSRegion != "" {
+		return c.resolveBedrock(auth), nil
+	}
+
+	// 5. Vertex AI — requires project + region, plus either ADC file or
 	//    a GCP service account via the metadata server (assign mode).
 	hasVertexCreds := auth.GoogleAppCredentials != "" || auth.GCPMetadataMode == "assign"
 	if hasVertexCreds && auth.GoogleCloudProject != "" && auth.GoogleCloudRegion != "" {
 		return c.resolveVertexAI(auth), nil
 	}
 
-	return nil, fmt.Errorf("claude: no valid auth method found; set ANTHROPIC_API_KEY for direct API access, CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ~/.claude/.credentials.json for subscription auth, or provide ADC (gcloud-adc secret, GCP service account, or ~/.config/gcloud/application_default_credentials.json) + GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_REGION for Vertex AI")
+	return nil, fmt.Errorf("claude: no valid auth method found; set ANTHROPIC_API_KEY for direct API access, CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ~/.claude/.credentials.json for subscription auth, AWS_BEARER_TOKEN_BEDROCK + AWS_REGION for Bedrock, or provide ADC (gcloud-adc secret, GCP service account, or ~/.config/gcloud/application_default_credentials.json) + GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_REGION for Vertex AI")
+}
+
+func (c *ClaudeCode) resolveBedrock(auth api.AuthConfig) *api.ResolvedAuth {
+	return &api.ResolvedAuth{
+		Method: "bedrock",
+		EnvVars: map[string]string{
+			"CLAUDE_CODE_USE_BEDROCK":  "1",
+			"AWS_BEARER_TOKEN_BEDROCK": auth.AWSBedrockBearerToken,
+			"AWS_REGION":               auth.AWSRegion,
+		},
+	}
 }
 
 func (c *ClaudeCode) resolveVertexAI(auth api.AuthConfig) *api.ResolvedAuth {

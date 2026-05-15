@@ -459,7 +459,8 @@
             "api_key": { "$ref": "#/$defs/capabilityField" },
             "auth_file": { "$ref": "#/$defs/capabilityField" },
             "oauth_token": { "$ref": "#/$defs/capabilityField" },
-            "vertex_ai": { "$ref": "#/$defs/capabilityField" }
+            "vertex_ai": { "$ref": "#/$defs/capabilityField" },
+            "bedrock": { "$ref": "#/$defs/capabilityField" }
           },
           "additionalProperties": false
         },

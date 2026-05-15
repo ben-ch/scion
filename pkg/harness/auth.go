@@ -56,12 +56,14 @@ func GatherAuthWithEnv(env map[string]string, localSources bool) api.AuthConfig 
 
 	auth := api.AuthConfig{
 		// Env-var sourced fields
-		GeminiAPIKey:     lookup("GEMINI_API_KEY"),
-		GoogleAPIKey:     lookup("GOOGLE_API_KEY"),
-		AnthropicAPIKey:  lookup("ANTHROPIC_API_KEY"),
-		ClaudeOAuthToken: lookup("CLAUDE_CODE_OAUTH_TOKEN"),
-		OpenAIAPIKey:     lookup("OPENAI_API_KEY"),
-		CodexAPIKey:      lookup("CODEX_API_KEY"),
+		GeminiAPIKey:          lookup("GEMINI_API_KEY"),
+		GoogleAPIKey:          lookup("GOOGLE_API_KEY"),
+		AnthropicAPIKey:       lookup("ANTHROPIC_API_KEY"),
+		ClaudeOAuthToken:      lookup("CLAUDE_CODE_OAUTH_TOKEN"),
+		AWSBedrockBearerToken: lookup("AWS_BEARER_TOKEN_BEDROCK"),
+		AWSRegion:             util.FirstNonEmpty(lookup("AWS_REGION"), lookup("AWS_DEFAULT_REGION")),
+		OpenAIAPIKey:          lookup("OPENAI_API_KEY"),
+		CodexAPIKey:           lookup("CODEX_API_KEY"),
 		GoogleCloudProject: util.FirstNonEmpty(
 			lookup("GOOGLE_CLOUD_PROJECT"),
 			lookup("GCP_PROJECT"),
@@ -298,6 +300,9 @@ func DetectAuthTypeFromEnvVars(harnessName string, envKeys map[string]struct{}) 
 		if _, ok := envKeys["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
 			return "oauth-token"
 		}
+		if _, ok := envKeys["AWS_BEARER_TOKEN_BEDROCK"]; ok {
+			return "bedrock"
+		}
 		if hasGAC || hasGCP {
 			return "vertex-ai"
 		}
@@ -355,6 +360,8 @@ func RequiredAuthEnvKeys(harnessName, authSelectedType string) [][]string {
 			return nil
 		case "vertex-ai":
 			return [][]string{{"GOOGLE_CLOUD_PROJECT"}, {"GOOGLE_CLOUD_REGION", "CLOUD_ML_REGION", "GOOGLE_CLOUD_LOCATION"}}
+		case "bedrock":
+			return [][]string{{"AWS_BEARER_TOKEN_BEDROCK"}, {"AWS_REGION", "AWS_DEFAULT_REGION"}}
 		}
 	case "gemini":
 		switch effectiveType {

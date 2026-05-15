@@ -52,6 +52,7 @@ func (c *Codex) AdvancedCapabilities() api.HarnessAdvancedCapabilities {
 			APIKey:   api.CapabilityField{Support: api.SupportYes},
 			AuthFile: api.CapabilityField{Support: api.SupportYes},
 			VertexAI: api.CapabilityField{Support: api.SupportNo, Reason: "Vertex AI auth is not supported for this harness"},
+			Bedrock:  api.CapabilityField{Support: api.SupportNo, Reason: "Bedrock auth is not supported for this harness"},
 		},
 		Resume: api.CapabilityField{Support: api.SupportYes},
 	}

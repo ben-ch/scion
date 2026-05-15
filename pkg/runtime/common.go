@@ -303,6 +303,18 @@ func buildCommonRunArgs(config RunConfig) ([]string, error) {
 			}
 			registerMount(gcloudConfigDir, fmt.Sprintf("/home/%s/.config/gcloud", config.UnixUsername), true, false)
 		}
+
+		// Mount ~/.aws for Bedrock SSO. Same broker-mode gating rationale
+		// as the gcloud mount above: the AWS SDK reads profile config and
+		// cached SSO tokens from ~/.aws.
+		awsConfigDir := filepath.Join(home, ".aws")
+		if _, err := os.Stat(awsConfigDir); err == nil {
+			if config.HomeDir != "" {
+				mountPoint := filepath.Join(config.HomeDir, ".aws")
+				_ = os.MkdirAll(mountPoint, 0755)
+			}
+			registerMount(awsConfigDir, fmt.Sprintf("/home/%s/.aws", config.UnixUsername), true, false)
+		}
 	}
 
 	for _, e := range config.Env {

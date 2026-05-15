@@ -481,8 +481,10 @@ type AuthConfig struct {
 	ClaudeAuthFile   string // ~/.claude/.credentials.json path (rotating refresh-token store)
 
 	// AWS Bedrock auth (Anthropic models served via Bedrock)
-	AWSBedrockBearerToken string // AWS_BEARER_TOKEN_BEDROCK
+	AWSBedrockBearerToken string // AWS_BEARER_TOKEN_BEDROCK (used by api-key path)
 	AWSRegion             string // AWS_REGION
+	AWSProfile            string // AWS_PROFILE (used by bedrock SSO path)
+	AWSConfigDir          string // ~/.aws path on host (used by bedrock SSO path)
 
 	// OpenAI/Codex auth
 	OpenAIAPIKey     string

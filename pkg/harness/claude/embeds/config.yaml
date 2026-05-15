@@ -48,12 +48,16 @@ capabilities:
     auth_file: { support: "yes" }
     oauth_token: { support: "yes" }
     vertex_ai: { support: "yes" }
+    bedrock: { support: "yes" }
 auth:
   default_type: api-key
   types:
     api-key:
+      # api-key covers two single-secret modes: Anthropic direct
+      # (ANTHROPIC_API_KEY) and Bedrock bearer token
+      # (AWS_BEARER_TOKEN_BEDROCK). Either satisfies the requirement.
       required_env:
-        - any_of: ["ANTHROPIC_API_KEY"]
+        - any_of: ["ANTHROPIC_API_KEY", "AWS_BEARER_TOKEN_BEDROCK"]
     oauth-token:
       required_env:
         - any_of: ["CLAUDE_CODE_OAUTH_TOKEN"]
@@ -73,12 +77,21 @@ auth:
           alternative_env_keys: ["GOOGLE_APPLICATION_CREDENTIALS"]
           skipped_when_gcp_service_account_assigned: true
           required: true
+    bedrock:
+      # Bedrock SSO mode: AWS_PROFILE + AWS_REGION. The user must run
+      # `aws sso login --profile <name>` on the host first; ~/.aws is
+      # mounted into the container by the runtime.
+      required_env:
+        - any_of: ["AWS_PROFILE"]
+        - any_of: ["AWS_REGION", "AWS_DEFAULT_REGION"]
   autodetect:
     env:
       CLAUDE_CODE_OAUTH_TOKEN: oauth-token
       GOOGLE_APPLICATION_CREDENTIALS: vertex-ai
       GOOGLE_CLOUD_PROJECT: vertex-ai
       ANTHROPIC_API_KEY: api-key
+      AWS_BEARER_TOKEN_BEDROCK: api-key
+      AWS_PROFILE: bedrock
     files:
       CLAUDE_AUTH: auth-file
       gcloud-adc: vertex-ai

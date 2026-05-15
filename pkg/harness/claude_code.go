@@ -123,7 +123,15 @@ func (c *ClaudeCode) Provision(ctx context.Context, agentName, agentDir, agentHo
 
 	switch cfg.AuthSelectedType {
 	case "api-key":
-		envUpdates = map[string]string{"ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"}
+		// api-key covers two single-secret modes: ANTHROPIC_API_KEY for
+		// direct Anthropic access, or AWS_BEARER_TOKEN_BEDROCK for Bedrock.
+		// Both env vars are passed through; ResolveAuth picks one at launch.
+		envUpdates = map[string]string{
+			"ANTHROPIC_API_KEY":        "${ANTHROPIC_API_KEY}",
+			"AWS_BEARER_TOKEN_BEDROCK": "${AWS_BEARER_TOKEN_BEDROCK}",
+			"AWS_REGION":               "${AWS_REGION}",
+			"CLAUDE_CODE_USE_BEDROCK":  "${CLAUDE_CODE_USE_BEDROCK}",
+		}
 	case "oauth-token":
 		envUpdates = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "${CLAUDE_CODE_OAUTH_TOKEN}"}
 	case "auth-file":
@@ -141,10 +149,13 @@ func (c *ClaudeCode) Provision(ctx context.Context, agentName, agentDir, agentHo
 			"CLOUD_ML_REGION":             "${GOOGLE_CLOUD_REGION}",
 		}
 	case "bedrock":
+		// SSO/profile mode: ~/.aws is mounted into the container by
+		// buildCommonRunArgs (gated on !BrokerMode). The AWS SDK reads
+		// the profile config and the cached SSO token from there.
 		envUpdates = map[string]string{
-			"CLAUDE_CODE_USE_BEDROCK":  "1",
-			"AWS_BEARER_TOKEN_BEDROCK": "${AWS_BEARER_TOKEN_BEDROCK}",
-			"AWS_REGION":               "${AWS_REGION}",
+			"CLAUDE_CODE_USE_BEDROCK": "1",
+			"AWS_PROFILE":             "${AWS_PROFILE}",
+			"AWS_REGION":              "${AWS_REGION}",
 		}
 	}
 
@@ -349,15 +360,24 @@ func (c *ClaudeCode) ResolveAuth(auth api.AuthConfig) (*api.ResolvedAuth, error)
 	if auth.SelectedType != "" {
 		switch auth.SelectedType {
 		case "api-key":
-			if auth.AnthropicAPIKey == "" {
-				return nil, fmt.Errorf("claude: auth type %q selected but no API key found; set ANTHROPIC_API_KEY", auth.SelectedType)
+			// api-key prefers ANTHROPIC_API_KEY (direct Anthropic), then
+			// falls back to AWS_BEARER_TOKEN_BEDROCK (Bedrock via bearer
+			// token, no SSO). The bedrock auth type covers SSO/profile mode.
+			if auth.AnthropicAPIKey != "" {
+				return &api.ResolvedAuth{
+					Method: "api-key",
+					EnvVars: map[string]string{
+						"ANTHROPIC_API_KEY": auth.AnthropicAPIKey,
+					},
+				}, nil
 			}
-			return &api.ResolvedAuth{
-				Method: "api-key",
-				EnvVars: map[string]string{
-					"ANTHROPIC_API_KEY": auth.AnthropicAPIKey,
-				},
-			}, nil
+			if auth.AWSBedrockBearerToken != "" {
+				if auth.AWSRegion == "" {
+					return nil, fmt.Errorf("claude: auth type %q with AWS_BEARER_TOKEN_BEDROCK requires AWS_REGION", auth.SelectedType)
+				}
+				return c.resolveBedrockBearer(auth), nil
+			}
+			return nil, fmt.Errorf("claude: auth type %q selected but no API key found; set ANTHROPIC_API_KEY or AWS_BEARER_TOKEN_BEDROCK (+ AWS_REGION)", auth.SelectedType)
 		case "oauth-token":
 			if auth.ClaudeOAuthToken == "" {
 				return nil, fmt.Errorf("claude: auth type %q selected but no OAuth token found; set CLAUDE_CODE_OAUTH_TOKEN (generate with `claude setup-token`)", auth.SelectedType)
@@ -384,19 +404,28 @@ func (c *ClaudeCode) ResolveAuth(auth api.AuthConfig) (*api.ResolvedAuth, error)
 			}
 			return c.resolveVertexAI(auth), nil
 		case "bedrock":
-			if auth.AWSBedrockBearerToken == "" {
-				return nil, fmt.Errorf("claude: auth type %q selected but AWS_BEARER_TOKEN_BEDROCK not set", auth.SelectedType)
+			if auth.AWSProfile == "" {
+				return nil, fmt.Errorf("claude: auth type %q selected but AWS_PROFILE not set", auth.SelectedType)
 			}
 			if auth.AWSRegion == "" {
 				return nil, fmt.Errorf("claude: auth type %q selected but AWS_REGION not set", auth.SelectedType)
 			}
-			return c.resolveBedrock(auth), nil
+			if auth.AWSConfigDir == "" {
+				return nil, fmt.Errorf("claude: auth type %q selected but ~/.aws not found; run `aws sso login --profile %s` first", auth.SelectedType, auth.AWSProfile)
+			}
+			return c.resolveBedrockSSO(auth), nil
 		default:
 			return nil, fmt.Errorf("claude: unknown auth type %q; valid types are: api-key, oauth-token, auth-file, vertex-ai, bedrock", auth.SelectedType)
 		}
 	}
 
-	// Auto-detect preference order: API key → OAuth token → credentials file → Vertex AI → error
+	// Auto-detect preference order:
+	// 1. ANTHROPIC_API_KEY (api-key, direct)
+	// 2. AWS_BEARER_TOKEN_BEDROCK (api-key, Bedrock bearer)
+	// 3. CLAUDE_CODE_OAUTH_TOKEN (oauth-token)
+	// 4. ~/.claude/.credentials.json (auth-file)
+	// 5. AWS_PROFILE + ~/.aws (bedrock SSO)
+	// 6. ADC + GCP project/region (vertex-ai)
 
 	// 1. Anthropic API key (direct)
 	if auth.AnthropicAPIKey != "" {
@@ -408,7 +437,15 @@ func (c *ClaudeCode) ResolveAuth(auth api.AuthConfig) (*api.ResolvedAuth, error)
 		}, nil
 	}
 
-	// 2. CLAUDE_CODE_OAUTH_TOKEN (long-lived subscription token from
+	// 2. AWS_BEARER_TOKEN_BEDROCK — single-secret Bedrock access via the
+	//    bearer-token flow. Surfaced under api-key because it's a single
+	//    static secret, like ANTHROPIC_API_KEY. Detected ahead of OAuth/
+	//    auth-file because it's an unambiguous LLM-specific env var.
+	if auth.AWSBedrockBearerToken != "" && auth.AWSRegion != "" {
+		return c.resolveBedrockBearer(auth), nil
+	}
+
+	// 3. CLAUDE_CODE_OAUTH_TOKEN (long-lived subscription token from
 	//    `claude setup-token`). Higher priority than the credentials file
 	//    because it does not rotate and therefore survives long sessions.
 	if auth.ClaudeOAuthToken != "" {
@@ -420,7 +457,7 @@ func (c *ClaudeCode) ResolveAuth(auth api.AuthConfig) (*api.ResolvedAuth, error)
 		}, nil
 	}
 
-	// 3. ~/.claude/.credentials.json — rotating refresh-token store managed
+	// 4. ~/.claude/.credentials.json — rotating refresh-token store managed
 	//    by Claude Code. We mount the file into the container so Claude Code
 	//    can read and refresh it natively rather than scraping a snapshot.
 	if auth.ClaudeAuthFile != "" {
@@ -432,31 +469,50 @@ func (c *ClaudeCode) ResolveAuth(auth api.AuthConfig) (*api.ResolvedAuth, error)
 		}, nil
 	}
 
-	// 4. AWS Bedrock — requires bearer token + region. Detected before
-	//    Vertex AI because AWS_BEARER_TOKEN_BEDROCK is unambiguous (an
-	//    LLM-specific env var) whereas Vertex relies on more generic GCP
-	//    credentials that may be present for unrelated reasons.
-	if auth.AWSBedrockBearerToken != "" && auth.AWSRegion != "" {
-		return c.resolveBedrock(auth), nil
+	// 5. AWS Bedrock SSO — requires AWS_PROFILE + AWS_REGION + ~/.aws.
+	//    The user must have run `aws sso login --profile <name>` on the
+	//    host first; we mount ~/.aws into the container so the SDK can
+	//    use the cached SSO token.
+	if auth.AWSProfile != "" && auth.AWSRegion != "" && auth.AWSConfigDir != "" {
+		return c.resolveBedrockSSO(auth), nil
 	}
 
-	// 5. Vertex AI — requires project + region, plus either ADC file or
+	// 6. Vertex AI — requires project + region, plus either ADC file or
 	//    a GCP service account via the metadata server (assign mode).
 	hasVertexCreds := auth.GoogleAppCredentials != "" || auth.GCPMetadataMode == "assign"
 	if hasVertexCreds && auth.GoogleCloudProject != "" && auth.GoogleCloudRegion != "" {
 		return c.resolveVertexAI(auth), nil
 	}
 
-	return nil, fmt.Errorf("claude: no valid auth method found; set ANTHROPIC_API_KEY for direct API access, CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ~/.claude/.credentials.json for subscription auth, AWS_BEARER_TOKEN_BEDROCK + AWS_REGION for Bedrock, or provide ADC (gcloud-adc secret, GCP service account, or ~/.config/gcloud/application_default_credentials.json) + GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_REGION for Vertex AI")
+	return nil, fmt.Errorf("claude: no valid auth method found; set ANTHROPIC_API_KEY for direct API access, AWS_BEARER_TOKEN_BEDROCK + AWS_REGION for Bedrock bearer auth, CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ~/.claude/.credentials.json for subscription auth, AWS_PROFILE + AWS_REGION (after `aws sso login`) for Bedrock SSO, or provide ADC + GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_REGION for Vertex AI")
 }
 
-func (c *ClaudeCode) resolveBedrock(auth api.AuthConfig) *api.ResolvedAuth {
+// resolveBedrockBearer returns a ResolvedAuth using AWS_BEARER_TOKEN_BEDROCK.
+// Surfaced under the "api-key" method because it's a single static secret,
+// matching how api-key works for ANTHROPIC_API_KEY.
+func (c *ClaudeCode) resolveBedrockBearer(auth api.AuthConfig) *api.ResolvedAuth {
 	return &api.ResolvedAuth{
-		Method: "bedrock",
+		Method: "api-key",
 		EnvVars: map[string]string{
 			"CLAUDE_CODE_USE_BEDROCK":  "1",
 			"AWS_BEARER_TOKEN_BEDROCK": auth.AWSBedrockBearerToken,
 			"AWS_REGION":               auth.AWSRegion,
+		},
+	}
+}
+
+// resolveBedrockSSO returns a ResolvedAuth using AWS_PROFILE-driven SSO.
+// NOTE: ~/.aws is mounted by buildCommonRunArgs in pkg/runtime/common.go,
+// gated on !BrokerMode. Do NOT add a ~/.aws volume here — it would bypass
+// the broker-mode check and leak the broker operator's credentials into
+// agent containers. Mirrors how Vertex AI mounts ~/.config/gcloud.
+func (c *ClaudeCode) resolveBedrockSSO(auth api.AuthConfig) *api.ResolvedAuth {
+	return &api.ResolvedAuth{
+		Method: "bedrock",
+		EnvVars: map[string]string{
+			"CLAUDE_CODE_USE_BEDROCK": "1",
+			"AWS_PROFILE":             auth.AWSProfile,
+			"AWS_REGION":              auth.AWSRegion,
 		},
 	}
 }

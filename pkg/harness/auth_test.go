@@ -388,7 +388,7 @@ func TestRequiredAuthEnvKeys(t *testing.T) {
 		want     [][]string
 	}{
 		// Claude
-		{"claude api-key", "claude", "api-key", [][]string{{"ANTHROPIC_API_KEY"}}},
+		{"claude api-key", "claude", "api-key", [][]string{{"ANTHROPIC_API_KEY", "AWS_BEARER_TOKEN_BEDROCK"}}},
 		{"claude oauth-token", "claude", "oauth-token", [][]string{{"CLAUDE_CODE_OAUTH_TOKEN"}}},
 		{"claude auth-file", "claude", "auth-file", nil},
 		{"claude vertex-ai", "claude", "vertex-ai", [][]string{{"GOOGLE_CLOUD_PROJECT"}, {"GOOGLE_CLOUD_REGION", "CLOUD_ML_REGION", "GOOGLE_CLOUD_LOCATION"}}},
@@ -411,7 +411,7 @@ func TestRequiredAuthEnvKeys(t *testing.T) {
 		{"generic vertex-ai", "generic", "vertex-ai", nil},
 
 		// Empty authType defaults to api-key
-		{"claude empty auth type", "claude", "", [][]string{{"ANTHROPIC_API_KEY"}}},
+		{"claude empty auth type", "claude", "", [][]string{{"ANTHROPIC_API_KEY", "AWS_BEARER_TOKEN_BEDROCK"}}},
 		{"gemini empty auth type", "gemini", "", [][]string{{"GEMINI_API_KEY", "GOOGLE_API_KEY"}}},
 		{"opencode empty auth type", "opencode", "", [][]string{{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}}},
 		{"codex empty auth type", "codex", "", [][]string{{"CODEX_API_KEY", "OPENAI_API_KEY"}}},

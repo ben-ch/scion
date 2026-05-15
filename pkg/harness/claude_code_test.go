@@ -231,6 +231,8 @@ func TestClaudeCode_Provision_VertexAI(t *testing.T) {
 }
 
 func TestClaudeCode_Provision_Bedrock(t *testing.T) {
+	// Bedrock auth type now means SSO/profile mode: AWS_PROFILE + AWS_REGION
+	// + ~/.aws mount. The bearer-token mode lives under api-key.
 	tmpDir := t.TempDir()
 	agentDir := tmpDir
 	agentHome := filepath.Join(agentDir, "home")
@@ -263,11 +265,51 @@ func TestClaudeCode_Provision_Bedrock(t *testing.T) {
 	if updatedCfg.Env["CLAUDE_CODE_USE_BEDROCK"] != "1" {
 		t.Errorf("CLAUDE_CODE_USE_BEDROCK = %q, want %q", updatedCfg.Env["CLAUDE_CODE_USE_BEDROCK"], "1")
 	}
-	if updatedCfg.Env["AWS_BEARER_TOKEN_BEDROCK"] != "${AWS_BEARER_TOKEN_BEDROCK}" {
-		t.Errorf("AWS_BEARER_TOKEN_BEDROCK = %q, want passthrough placeholder", updatedCfg.Env["AWS_BEARER_TOKEN_BEDROCK"])
+	if updatedCfg.Env["AWS_PROFILE"] != "${AWS_PROFILE}" {
+		t.Errorf("AWS_PROFILE = %q, want passthrough placeholder", updatedCfg.Env["AWS_PROFILE"])
 	}
 	if updatedCfg.Env["AWS_REGION"] != "${AWS_REGION}" {
 		t.Errorf("AWS_REGION = %q, want passthrough placeholder", updatedCfg.Env["AWS_REGION"])
+	}
+	if _, ok := updatedCfg.Env["AWS_BEARER_TOKEN_BEDROCK"]; ok {
+		t.Errorf("AWS_BEARER_TOKEN_BEDROCK should not be set under bedrock SSO; got %v", updatedCfg.Env)
+	}
+}
+
+func TestClaudeCode_Provision_APIKey_PassesBedrockBearer(t *testing.T) {
+	// api-key now passes through both ANTHROPIC_API_KEY and the bearer-
+	// token env vars so the runtime can pick whichever is set.
+	tmpDir := t.TempDir()
+	agentDir := tmpDir
+	agentHome := filepath.Join(agentDir, "home")
+	agentWorkspace := filepath.Join(tmpDir, "workspace")
+	os.MkdirAll(agentHome, 0755)
+	os.MkdirAll(agentWorkspace, 0755)
+
+	claudeJSONPath := filepath.Join(agentHome, ".claude.json")
+	os.WriteFile(claudeJSONPath, []byte(`{"projects":{}}`), 0644)
+
+	scionAgentPath := filepath.Join(agentDir, "scion-agent.json")
+	scionCfg := api.ScionConfig{AuthSelectedType: "api-key"}
+	data, _ := json.MarshalIndent(scionCfg, "", "  ")
+	os.WriteFile(scionAgentPath, data, 0644)
+
+	c := &ClaudeCode{}
+	if err := c.Provision(context.Background(), "test-agent", agentDir, agentHome, agentWorkspace); err != nil {
+		t.Fatalf("Provision failed: %v", err)
+	}
+
+	updated, _ := os.ReadFile(scionAgentPath)
+	var updatedCfg api.ScionConfig
+	if err := json.Unmarshal(updated, &updatedCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, key := range []string{"ANTHROPIC_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "AWS_REGION", "CLAUDE_CODE_USE_BEDROCK"} {
+		want := "${" + key + "}"
+		if updatedCfg.Env[key] != want {
+			t.Errorf("Env[%s] = %q, want %q", key, updatedCfg.Env[key], want)
+		}
 	}
 }
 
@@ -735,7 +777,8 @@ func TestClaudeResolveAuth_CredentialsFile_ExplicitMissing(t *testing.T) {
 	}
 }
 
-func TestClaudeResolveAuth_Bedrock(t *testing.T) {
+func TestClaudeResolveAuth_BedrockBearer_Auto(t *testing.T) {
+	// AWS_BEARER_TOKEN_BEDROCK falls under api-key — single static secret.
 	c := &ClaudeCode{}
 	auth := api.AuthConfig{
 		AWSBedrockBearerToken: "bedrock-token",
@@ -745,8 +788,8 @@ func TestClaudeResolveAuth_Bedrock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Method != "bedrock" {
-		t.Errorf("Method = %q, want %q", result.Method, "bedrock")
+	if result.Method != "api-key" {
+		t.Errorf("Method = %q, want %q", result.Method, "api-key")
 	}
 	if result.EnvVars["CLAUDE_CODE_USE_BEDROCK"] != "1" {
 		t.Errorf("CLAUDE_CODE_USE_BEDROCK = %q, want %q", result.EnvVars["CLAUDE_CODE_USE_BEDROCK"], "1")
@@ -758,16 +801,74 @@ func TestClaudeResolveAuth_Bedrock(t *testing.T) {
 		t.Errorf("AWS_REGION = %q, want %q", result.EnvVars["AWS_REGION"], "us-east-1")
 	}
 	if len(result.Files) != 0 {
-		t.Errorf("expected no files for bedrock, got %d", len(result.Files))
+		t.Errorf("expected no files for bearer-token bedrock, got %d", len(result.Files))
 	}
 }
 
-func TestClaudeResolveAuth_Bedrock_Explicit(t *testing.T) {
+func TestClaudeResolveAuth_BedrockBearer_ExplicitAPIKey(t *testing.T) {
+	// SelectedType=api-key with bearer token but no ANTHROPIC_API_KEY
+	// must fall through to the bearer-token branch.
 	c := &ClaudeCode{}
 	auth := api.AuthConfig{
-		SelectedType:          "bedrock",
+		SelectedType:          "api-key",
 		AWSBedrockBearerToken: "bedrock-token",
-		AWSRegion:             "us-west-2",
+		AWSRegion:             "us-east-1",
+	}
+	result, err := c.ResolveAuth(auth)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Method != "api-key" {
+		t.Errorf("Method = %q, want %q", result.Method, "api-key")
+	}
+	if result.EnvVars["AWS_BEARER_TOKEN_BEDROCK"] != "bedrock-token" {
+		t.Errorf("AWS_BEARER_TOKEN_BEDROCK = %q", result.EnvVars["AWS_BEARER_TOKEN_BEDROCK"])
+	}
+}
+
+func TestClaudeResolveAuth_BedrockBearer_ExplicitAPIKeyMissingRegion(t *testing.T) {
+	c := &ClaudeCode{}
+	auth := api.AuthConfig{
+		SelectedType:          "api-key",
+		AWSBedrockBearerToken: "bedrock-token",
+	}
+	_, err := c.ResolveAuth(auth)
+	if err == nil {
+		t.Fatal("expected error for bearer-token with no AWS_REGION")
+	}
+	if !strings.Contains(err.Error(), "AWS_REGION") {
+		t.Errorf("error should mention AWS_REGION: %v", err)
+	}
+}
+
+func TestClaudeResolveAuth_AnthropicWinsOverBearer(t *testing.T) {
+	// When both ANTHROPIC_API_KEY and AWS_BEARER_TOKEN_BEDROCK are set,
+	// the explicit Anthropic key wins under api-key.
+	c := &ClaudeCode{}
+	auth := api.AuthConfig{
+		SelectedType:          "api-key",
+		AnthropicAPIKey:       "sk-ant-key",
+		AWSBedrockBearerToken: "bedrock-token",
+		AWSRegion:             "us-east-1",
+	}
+	result, err := c.ResolveAuth(auth)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.EnvVars["ANTHROPIC_API_KEY"] != "sk-ant-key" {
+		t.Errorf("expected ANTHROPIC_API_KEY to win; got %v", result.EnvVars)
+	}
+	if _, ok := result.EnvVars["AWS_BEARER_TOKEN_BEDROCK"]; ok {
+		t.Errorf("Bedrock env should not be set when ANTHROPIC_API_KEY wins; got %v", result.EnvVars)
+	}
+}
+
+func TestClaudeResolveAuth_BedrockSSO(t *testing.T) {
+	c := &ClaudeCode{}
+	auth := api.AuthConfig{
+		AWSProfile:   "claude",
+		AWSRegion:    "us-east-2",
+		AWSConfigDir: "/host/home/.aws",
 	}
 	result, err := c.ResolveAuth(auth)
 	if err != nil {
@@ -776,26 +877,62 @@ func TestClaudeResolveAuth_Bedrock_Explicit(t *testing.T) {
 	if result.Method != "bedrock" {
 		t.Errorf("Method = %q, want %q", result.Method, "bedrock")
 	}
-	if result.EnvVars["AWS_REGION"] != "us-west-2" {
-		t.Errorf("AWS_REGION = %q, want %q", result.EnvVars["AWS_REGION"], "us-west-2")
+	if result.EnvVars["CLAUDE_CODE_USE_BEDROCK"] != "1" {
+		t.Errorf("CLAUDE_CODE_USE_BEDROCK = %q, want 1", result.EnvVars["CLAUDE_CODE_USE_BEDROCK"])
+	}
+	if result.EnvVars["AWS_PROFILE"] != "claude" {
+		t.Errorf("AWS_PROFILE = %q, want %q", result.EnvVars["AWS_PROFILE"], "claude")
+	}
+	if result.EnvVars["AWS_REGION"] != "us-east-2" {
+		t.Errorf("AWS_REGION = %q, want %q", result.EnvVars["AWS_REGION"], "us-east-2")
+	}
+	// ~/.aws is mounted by buildCommonRunArgs (mirrors Vertex's gcloud
+	// mount), not by the harness — so no Files mapping is expected.
+	if len(result.Files) != 0 {
+		t.Errorf("expected no file mappings (mount is handled by buildCommonRunArgs); got %d", len(result.Files))
 	}
 }
 
-func TestClaudeResolveAuth_Bedrock_ExplicitMissingToken(t *testing.T) {
+func TestClaudeResolveAuth_BedrockSSO_Explicit(t *testing.T) {
 	c := &ClaudeCode{}
-	auth := api.AuthConfig{SelectedType: "bedrock", AWSRegion: "us-east-1"}
+	auth := api.AuthConfig{
+		SelectedType: "bedrock",
+		AWSProfile:   "claude",
+		AWSRegion:    "us-west-2",
+		AWSConfigDir: "/host/home/.aws",
+	}
+	result, err := c.ResolveAuth(auth)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Method != "bedrock" {
+		t.Errorf("Method = %q, want %q", result.Method, "bedrock")
+	}
+}
+
+func TestClaudeResolveAuth_BedrockSSO_ExplicitMissingProfile(t *testing.T) {
+	c := &ClaudeCode{}
+	auth := api.AuthConfig{
+		SelectedType: "bedrock",
+		AWSRegion:    "us-east-1",
+		AWSConfigDir: "/host/home/.aws",
+	}
 	_, err := c.ResolveAuth(auth)
 	if err == nil {
-		t.Fatal("expected error for bedrock with no bearer token")
+		t.Fatal("expected error for bedrock with no AWS_PROFILE")
 	}
-	if !strings.Contains(err.Error(), "AWS_BEARER_TOKEN_BEDROCK") {
-		t.Errorf("error should mention AWS_BEARER_TOKEN_BEDROCK: %v", err)
+	if !strings.Contains(err.Error(), "AWS_PROFILE") {
+		t.Errorf("error should mention AWS_PROFILE: %v", err)
 	}
 }
 
-func TestClaudeResolveAuth_Bedrock_ExplicitMissingRegion(t *testing.T) {
+func TestClaudeResolveAuth_BedrockSSO_ExplicitMissingRegion(t *testing.T) {
 	c := &ClaudeCode{}
-	auth := api.AuthConfig{SelectedType: "bedrock", AWSBedrockBearerToken: "bedrock-token"}
+	auth := api.AuthConfig{
+		SelectedType: "bedrock",
+		AWSProfile:   "claude",
+		AWSConfigDir: "/host/home/.aws",
+	}
 	_, err := c.ResolveAuth(auth)
 	if err == nil {
 		t.Fatal("expected error for bedrock with no region")
@@ -805,37 +942,58 @@ func TestClaudeResolveAuth_Bedrock_ExplicitMissingRegion(t *testing.T) {
 	}
 }
 
-func TestClaudeResolveAuth_BedrockBeatsVertex(t *testing.T) {
+func TestClaudeResolveAuth_BedrockSSO_ExplicitMissingConfigDir(t *testing.T) {
 	c := &ClaudeCode{}
 	auth := api.AuthConfig{
-		AWSBedrockBearerToken: "bedrock-token",
-		AWSRegion:             "us-east-1",
-		GoogleAppCredentials:  "/path/to/adc.json",
-		GoogleCloudProject:    "proj",
-		GoogleCloudRegion:     "us-central1",
+		SelectedType: "bedrock",
+		AWSProfile:   "claude",
+		AWSRegion:    "us-east-1",
 	}
-	result, err := c.ResolveAuth(auth)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := c.ResolveAuth(auth)
+	if err == nil {
+		t.Fatal("expected error for bedrock with no ~/.aws")
 	}
-	if result.Method != "bedrock" {
-		t.Errorf("bedrock should win over vertex-ai; Method = %q", result.Method)
+	if !strings.Contains(err.Error(), "aws sso login") {
+		t.Errorf("error should suggest `aws sso login`: %v", err)
 	}
 }
 
-func TestClaudeResolveAuth_APIKeyBeatsBedrock(t *testing.T) {
+func TestClaudeResolveAuth_BearerBeatsSSO(t *testing.T) {
+	// When both bearer-token and SSO inputs are present, the bearer-token
+	// (api-key) path wins under auto-detect — it's higher priority.
 	c := &ClaudeCode{}
 	auth := api.AuthConfig{
-		AnthropicAPIKey:       "sk-ant-key",
 		AWSBedrockBearerToken: "bedrock-token",
 		AWSRegion:             "us-east-1",
+		AWSProfile:            "claude",
+		AWSConfigDir:          "/host/home/.aws",
 	}
 	result, err := c.ResolveAuth(auth)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Method != "api-key" {
-		t.Errorf("api-key should win over bedrock; Method = %q", result.Method)
+		t.Errorf("api-key (bearer) should win over bedrock SSO; Method = %q", result.Method)
+	}
+	if len(result.Files) != 0 {
+		t.Errorf("bearer-token mode should not mount files; got %d", len(result.Files))
+	}
+}
+
+func TestClaudeResolveAuth_AnthropicBeatsBedrockSSO(t *testing.T) {
+	c := &ClaudeCode{}
+	auth := api.AuthConfig{
+		AnthropicAPIKey: "sk-ant-key",
+		AWSProfile:      "claude",
+		AWSRegion:       "us-east-1",
+		AWSConfigDir:    "/host/home/.aws",
+	}
+	result, err := c.ResolveAuth(auth)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Method != "api-key" {
+		t.Errorf("ANTHROPIC_API_KEY should win over bedrock SSO; Method = %q", result.Method)
 	}
 }
 
@@ -900,6 +1058,9 @@ func TestClaudeResolveAuth_UnknownType(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "oauth-token") || !strings.Contains(err.Error(), "auth-file") {
 		t.Errorf("error should list valid types including oauth-token and auth-file: %v", err)
+	}
+	if !strings.Contains(err.Error(), "bedrock") {
+		t.Errorf("error should list bedrock as a valid type: %v", err)
 	}
 }
 

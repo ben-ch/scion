@@ -62,6 +62,7 @@ func GatherAuthWithEnv(env map[string]string, localSources bool) api.AuthConfig 
 		ClaudeOAuthToken:      lookup("CLAUDE_CODE_OAUTH_TOKEN"),
 		AWSBedrockBearerToken: lookup("AWS_BEARER_TOKEN_BEDROCK"),
 		AWSRegion:             util.FirstNonEmpty(lookup("AWS_REGION"), lookup("AWS_DEFAULT_REGION")),
+		AWSProfile:            lookup("AWS_PROFILE"),
 		OpenAIAPIKey:          lookup("OPENAI_API_KEY"),
 		CodexAPIKey:           lookup("CODEX_API_KEY"),
 		GoogleCloudProject: util.FirstNonEmpty(
@@ -113,6 +114,15 @@ func GatherAuthWithEnv(env map[string]string, localSources bool) api.AuthConfig 
 			claudeCredsPath := filepath.Join(home, ".claude", ".credentials.json")
 			if _, err := os.Stat(claudeCredsPath); err == nil {
 				auth.ClaudeAuthFile = claudeCredsPath
+			}
+
+			// ~/.aws holds the SSO profile config and cached SSO tokens.
+			// We mount this directory into the container so the AWS SDK
+			// can resolve credentials from the user's pre-existing
+			// `aws sso login` session.
+			awsDir := filepath.Join(home, ".aws")
+			if info, err := os.Stat(awsDir); err == nil && info.IsDir() {
+				auth.AWSConfigDir = awsDir
 			}
 		}
 	}
@@ -297,10 +307,15 @@ func DetectAuthTypeFromEnvVars(harnessName string, envKeys map[string]struct{}) 
 		if _, ok := envKeys["ANTHROPIC_API_KEY"]; ok {
 			return ""
 		}
+		// AWS_BEARER_TOKEN_BEDROCK satisfies api-key (the default), so
+		// no override is needed. (See ResolveAuth's api-key branch.)
+		if _, ok := envKeys["AWS_BEARER_TOKEN_BEDROCK"]; ok {
+			return ""
+		}
 		if _, ok := envKeys["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
 			return "oauth-token"
 		}
-		if _, ok := envKeys["AWS_BEARER_TOKEN_BEDROCK"]; ok {
+		if _, ok := envKeys["AWS_PROFILE"]; ok {
 			return "bedrock"
 		}
 		if hasGAC || hasGCP {
@@ -353,7 +368,9 @@ func RequiredAuthEnvKeys(harnessName, authSelectedType string) [][]string {
 	case "claude":
 		switch effectiveType {
 		case "api-key":
-			return [][]string{{"ANTHROPIC_API_KEY"}}
+			// Either ANTHROPIC_API_KEY (direct) or AWS_BEARER_TOKEN_BEDROCK
+			// (Bedrock bearer) satisfies the api-key requirement.
+			return [][]string{{"ANTHROPIC_API_KEY", "AWS_BEARER_TOKEN_BEDROCK"}}
 		case "oauth-token":
 			return [][]string{{"CLAUDE_CODE_OAUTH_TOKEN"}}
 		case "auth-file":
@@ -361,7 +378,9 @@ func RequiredAuthEnvKeys(harnessName, authSelectedType string) [][]string {
 		case "vertex-ai":
 			return [][]string{{"GOOGLE_CLOUD_PROJECT"}, {"GOOGLE_CLOUD_REGION", "CLOUD_ML_REGION", "GOOGLE_CLOUD_LOCATION"}}
 		case "bedrock":
-			return [][]string{{"AWS_BEARER_TOKEN_BEDROCK"}, {"AWS_REGION", "AWS_DEFAULT_REGION"}}
+			// Bedrock SSO mode: requires AWS_PROFILE + AWS_REGION. The
+			// ~/.aws directory is checked separately during resolution.
+			return [][]string{{"AWS_PROFILE"}, {"AWS_REGION", "AWS_DEFAULT_REGION"}}
 		}
 	case "gemini":
 		switch effectiveType {

@@ -50,10 +50,10 @@ arguments are provided, an empty prompt.md is created for later editing.`,
 		// Validate --harness-auth value
 		if harnessAuthFlag != "" {
 			switch harnessAuthFlag {
-			case "api-key", "oauth-token", "auth-file", "vertex-ai":
+			case "api-key", "oauth-token", "auth-file", "vertex-ai", "bedrock":
 				// valid
 			default:
-				return fmt.Errorf("invalid --harness-auth value %q: must be one of api-key, oauth-token, auth-file, vertex-ai", harnessAuthFlag)
+				return fmt.Errorf("invalid --harness-auth value %q: must be one of api-key, oauth-token, auth-file, vertex-ai, bedrock", harnessAuthFlag)
 			}
 		}
 
